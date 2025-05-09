@@ -6,6 +6,11 @@ A Go language wrapper for calling `oneforall` and converting results into struct
 [OneForAll](https://github.com/shmilylty/OneForAll) is a powerful subdomain integration tool created by [shmilylty](https://github.com/shmilylty)
 
 
+## Install 
+```bash
+ go get github.com/jiaohoping/oneforall_go
+```
+
 ## Simple example
 ```go
 package main
