@@ -73,6 +73,18 @@ func main() {
 
 ```
 
+The program above outputs:
+```txt
+2025-05-09 22:24:30 INF main.go:44 > Scan completed! Found subdomains count=6
+2025-05-09 22:24:30 INF main.go:55 > Found subdomain ip=96.7.128.198,23.215.0.136,23.192.228.84,96.7.128.175,23.192.228.80,23.215.0.138 status=200 subdomain=example.com
+2025-05-09 22:24:30 INF main.go:55 > Found subdomain ip=96.7.129.6,96.7.129.42 status=200 subdomain=www.example.com
+2025-05-09 22:24:30 INF main.go:55 > Found subdomain ip=96.7.128.198,23.215.0.136,23.192.228.84,96.7.128.175,23.192.228.80,23.215.0.138 status=200 subdomain=example.com
+2025-05-09 22:24:30 INF main.go:55 > Found subdomain ip=96.7.129.6,96.7.129.42 status=200 subdomain=www.example.com
+2025-05-09 22:24:30 INF main.go:55 > Found subdomain ip=31.13.94.37 status=0 subdomain=www.google.com.example.com
+2025-05-09 22:24:30 INF main.go:55 > Found subdomain ip=31.13.94.37 status=0 subdomain=www.google.com.example.com
+```
+
+
 ## External resources
 - [OnForAll](https://github.com/shmilylty/OneForAll)
 - [nmap for go developers](https://github.com/Ullaakut/nmap), inspiration source

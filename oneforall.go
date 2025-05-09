@@ -191,7 +191,7 @@ func (s *Scanner) processResult(result *Result, done chan error) error {
 
 	oneforallFolder := filepath.Dir(s.oneforallPath)
 	resultDBPath := filepath.Join(oneforallFolder, RESULT_DB_PATH, RESULT_DB_NAME)
-	log.Info().Str("target", s.target).Str("oneforallPath", s.oneforallPath).Str("oneforallFolder", oneforallFolder).Str("resultDBPath", resultDBPath).Msg("processing result")
+	log.Debug().Str("target", s.target).Str("oneforallPath", s.oneforallPath).Str("oneforallFolder", oneforallFolder).Str("resultDBPath", resultDBPath).Msg("processing result")
 
 	// 1. check error
 	if errStatus != nil {
