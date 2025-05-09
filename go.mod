@@ -1,6 +1,6 @@
 module github.com/jiaohoping/oneforall_go
 
-go 1.23.4
+go 1.21
 
 require (
 	github.com/rs/zerolog v1.33.0
