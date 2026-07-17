@@ -3,18 +3,15 @@ package oneforall
 import "errors"
 
 var (
-	// ErrPythonNotInstalled indicates Python is not installed
+	// ErrPythonNotInstalled is returned when python3 cannot be found on PATH
+	// and no explicit path was provided via WithPythonPath.
 	ErrPythonNotInstalled = errors.New("python3 is not installed")
 
-	// ErrOneForAllPathNotSet indicates OneForAll path is not set
+	// ErrOneForAllPathNotSet is returned when the path to oneforall.py was not
+	// provided via WithOneForAllPath.
 	ErrOneForAllPathNotSet = errors.New("oneForAll script path is not set")
 
-	// ErrModuleNotFound indicates required Python modules are missing
-	ErrModuleNotFound = errors.New("required Python modules are missing")
-
-	// ErrPermissionDenied indicates insufficient permissions
-	ErrPermissionDenied = errors.New("permission denied")
-
-	// ErrParseOutput indicates output parsing failure
+	// ErrParseOutput is returned when the result database cannot be found or
+	// its contents cannot be parsed.
 	ErrParseOutput = errors.New("failed to parse output")
 )
