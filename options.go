@@ -3,7 +3,6 @@ package oneforall
 import (
 	"fmt"
 	"os"
-	"strings"
 )
 
 // WithTarget sets a single target domain for the scan (--target).
@@ -19,6 +18,9 @@ func WithTarget(domain string) Option {
 // For a single domain it maps to --target. For multiple domains a temporary
 // file containing one domain per line is created and --targets is used; the
 // file is automatically removed when Run completes.
+//
+// If the temporary file cannot be created the error is stored internally and
+// returned when Run or Validate is called.
 func WithTargets(domains ...string) Option {
 	return func(s *Scanner) {
 		if len(domains) == 0 {
@@ -32,9 +34,7 @@ func WithTargets(domains ...string) Option {
 
 		f, err := os.CreateTemp("", "oneforall-targets-*.txt")
 		if err != nil {
-			// Fall back to the first domain only when temp file creation fails.
-			s.targets = []string{domains[0]}
-			s.targetArgs = []string{"--target", domains[0]}
+			s.initErr = fmt.Errorf("WithTargets: failed to create temp file: %w", err)
 			return
 		}
 
@@ -42,8 +42,7 @@ func WithTargets(domains ...string) Option {
 			if _, werr := fmt.Fprintln(f, d); werr != nil {
 				f.Close()
 				os.Remove(f.Name()) //nolint:errcheck
-				s.targets = []string{domains[0]}
-				s.targetArgs = []string{"--target", domains[0]}
+				s.initErr = fmt.Errorf("WithTargets: failed to write temp file: %w", werr)
 				return
 			}
 		}
@@ -56,27 +55,12 @@ func WithTargets(domains ...string) Option {
 }
 
 // WithTargetFile sets a file containing one domain per line as scan targets
-// (--targets). The file is read immediately to populate the target list used
-// for result DB lookup; if the file cannot be read at option-apply time the
-// path itself is stored as a placeholder.
+// (--targets). The file is read lazily when Run is called, so it does not need
+// to exist at the time this option is applied.
 func WithTargetFile(filePath string) Option {
 	return func(s *Scanner) {
+		s.targetFilePath = filePath
 		s.targetArgs = []string{"--targets", filePath}
-
-		data, err := os.ReadFile(filePath)
-		if err != nil {
-			// Store the path as a single target placeholder; lookup may fail
-			// at result-parse time if the file truly does not exist.
-			s.targets = []string{filePath}
-			return
-		}
-
-		for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
-			line = strings.TrimSpace(line)
-			if line != "" {
-				s.targets = append(s.targets, line)
-			}
-		}
 	}
 }
 

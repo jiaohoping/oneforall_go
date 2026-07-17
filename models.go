@@ -46,17 +46,13 @@ type Subdomain struct {
 // IPs returns the individual IP addresses for this subdomain.
 // OneForAll stores multiple addresses as a comma-separated string.
 func (s Subdomain) IPs() []string {
-	if s.IP == "" {
-		return nil
-	}
-	parts := strings.Split(s.IP, ",")
-	out := make([]string, 0, len(parts))
-	for _, p := range parts {
-		if p = strings.TrimSpace(p); p != "" {
-			out = append(out, p)
-		}
-	}
-	return out
+	return splitCSV(s.IP)
+}
+
+// CNAMEs returns the individual CNAME values for this subdomain.
+// OneForAll may store multiple CNAMEs as a comma-separated string.
+func (s Subdomain) CNAMEs() []string {
+	return splitCSV(s.CNAME)
 }
 
 // IsAlive reports whether the subdomain is considered alive (Alive == 1).
@@ -75,6 +71,21 @@ func (s Subdomain) IsCDN() bool { return s.CDN == 1 }
 // IsNew reports whether the subdomain was newly discovered in this run
 // (Find == 1).
 func (s Subdomain) IsNew() bool { return s.Find == 1 }
+
+// splitCSV splits a comma-separated string into a trimmed, non-empty slice.
+func splitCSV(s string) []string {
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
 
 // --- Result helper methods ---
 
@@ -95,12 +106,37 @@ func (r Result) Alive() Result {
 	return r.Filter(Subdomain.IsAlive)
 }
 
+// Unique returns a new Result with duplicate subdomain names removed. When
+// duplicates exist (e.g. from multi-target or multi-module scans), the first
+// occurrence is kept.
+func (r Result) Unique() Result {
+	seen := make(map[string]struct{}, len(r.Subdomains))
+	out := Result{}
+	for _, sub := range r.Subdomains {
+		if _, exists := seen[sub.Subdomain]; !exists {
+			seen[sub.Subdomain] = struct{}{}
+			out.Subdomains = append(out.Subdomains, sub)
+		}
+	}
+	return out
+}
+
 // GroupByModule returns a map from module name to the subdomains discovered
 // by that module.
 func (r Result) GroupByModule() map[string][]Subdomain {
 	m := make(map[string][]Subdomain)
 	for _, sub := range r.Subdomains {
 		m[sub.Module] = append(m[sub.Module], sub)
+	}
+	return m
+}
+
+// GroupBySource returns a map from source name to the subdomains discovered
+// via that source.
+func (r Result) GroupBySource() map[string][]Subdomain {
+	m := make(map[string][]Subdomain)
+	for _, sub := range r.Subdomains {
+		m[sub.Source] = append(m[sub.Source], sub)
 	}
 	return m
 }
@@ -113,6 +149,7 @@ type ResultStats struct {
 	Resolved int
 	New      int
 	ByModule map[string]int
+	BySource map[string]int
 }
 
 // Stats computes aggregate statistics over the result set.
@@ -120,6 +157,7 @@ func (r Result) Stats() ResultStats {
 	stats := ResultStats{
 		Total:    len(r.Subdomains),
 		ByModule: make(map[string]int),
+		BySource: make(map[string]int),
 	}
 	for _, sub := range r.Subdomains {
 		if sub.IsAlive() {
@@ -135,6 +173,7 @@ func (r Result) Stats() ResultStats {
 			stats.New++
 		}
 		stats.ByModule[sub.Module]++
+		stats.BySource[sub.Source]++
 	}
 	return stats
 }
