@@ -1,0 +1,97 @@
+# Changelog
+
+All notable changes to this project are documented in this file.
+
+Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)  
+Versioning: [Semantic Versioning](https://semver.org/)
+
+---
+
+## [v0.2.0] — 2026-07-17
+
+See [MIGRATION.md](MIGRATION.md) for a detailed upgrade guide from v0.1.x.
+
+### Fixed
+
+- **`WithAlive()` used a non-existent `--alive` flag** — OneForAll's CLI does
+  not accept `--alive`; the correct parameter is `--valid True/False`.
+  `WithAlive()` is now a deprecated alias for `WithValid(true)`.
+- **`WithTargets(...)` silently dropped domains** — The old implementation
+  emitted `-t` (single dash) which the argument assembler ignored, causing
+  every multi-domain scan to fail with "missing required parameter".
+  Fixed: single domain uses `--target`; multiple domains are written to a
+  temporary file and passed with `--targets`.
+- **`WithTargets` / `WithTargetFile` did not set the target list** — The
+  internal `s.target` field was never populated, causing `processResult` to
+  query an empty table name from the result database. Both options now
+  correctly populate `s.targets`.
+- **`ScanRunner` interface mismatch** — The declared interface returned
+  `(*Result, []string, error)` but `Scanner.Run()` returned `(*Result, error)`;
+  `Scanner` never implemented its own interface. The interface is now
+  `Run() (*Result, error)`.
+- **`outputFormat` defaulted to empty string** — When `WithOutputFormat` was
+  not called, `--fmt ""` was passed to OneForAll. Default is now `"csv"`.
+- **`subdomainFilter` was stored but never applied** — The filter set via
+  `WithFilterSubdomain` is now applied after the result database is read.
+- **Argument assembler silently dropped single-dash flags** — The two-pass
+  arg-assembly logic only recognised `--` prefixed flags. The assembler has
+  been replaced with a structured approach (separate `targetArgs` / `runArgs`
+  slices) that is deterministic and correct.
+- **`cmd.SysProcAttr` nil pointer** — `exec.Command` returns a nil
+  `SysProcAttr`; passing it to a user callback caused a nil-pointer panic.
+  It is now initialised to `&syscall.SysProcAttr{}` before the callback.
+- **`WithOutputPath` + `ToFile` produced duplicate `--path`** — Both paths
+  now write to the same internal field; `--path` appears exactly once.
+- **`stderr` content was captured but never surfaced** — On process failure
+  the stderr output (up to 1 KiB) is now appended to the returned error.
+- **`fmt.Errorf` used `%v` instead of `%w`** — All internal error wrapping now
+  uses `%w`, enabling `errors.Is` / `errors.As` unwrapping by callers.
+
+### Added
+
+- **`WithValid(bool)`** — Correct replacement for `WithAlive()` (maps to
+  `--valid True/False`).
+- **`WithShow(bool)`** — Exposes OneForAll's `--show` flag.
+- **`(*Scanner).Validate() error`** — Pre-flight check that verifies the
+  python executable and oneforall.py script exist on disk and that at least
+  one target is configured.
+- **`(*Scanner).RunAsync(func(*Result, error))`** — Asynchronous scan;
+  replaces the internal dead-code async path.
+- **`(*Result).FromDB(dbPath, target string) error`** — Now prefers the
+  `<target>_now_result` table (standard OneForAll output) and falls back to
+  the plain `<target>` table.
+- **`(*Result).FromDBMulti(dbPath string, targets []string) error`** — Reads
+  results for multiple target domains from a single SQLite database.
+- **`Result.Filter(func(Subdomain) bool) Result`** — Functional filter over
+  the subdomain list.
+- **`Result.Alive() Result`** — Shortcut that keeps only alive subdomains.
+- **`Result.GroupByModule() map[string][]Subdomain`** — Groups subdomains by
+  the discovery module that found them.
+- **`Result.Stats() ResultStats`** — Aggregate statistics: total, alive, CDN,
+  resolved, new, per-module counts.
+- **`Subdomain.IPs() []string`** — Parses the comma-separated `IP` field into
+  a typed slice.
+- **`Subdomain.IsAlive() bool`**, **`IsResolved() bool`**,
+  **`IsRequested() bool`**, **`IsCDN() bool`**, **`IsNew() bool`** — Typed
+  boolean accessors for the 0/1 integer fields.
+- **43 unit tests** covering scanner options, argument assembly, result
+  filtering/aggregation, and SQLite parsing.
+
+### Changed
+
+- **`logger.go` no longer calls `init()`** — Libraries must not modify global
+  zerolog state. Callers are responsible for configuring zerolog in their own
+  `main` or `init`. See [MIGRATION.md](MIGRATION.md) for examples.
+- **`errors.go`** — Removed unused `ErrModuleNotFound` and
+  `ErrPermissionDenied`; `ErrParseOutput` is now returned when the result
+  database is missing.
+
+### Deprecated
+
+- **`WithAlive()`** — Use `WithValid(true)`. Will be removed in v1.0.0.
+- **`ScanRunnerV1`** — The old interface with a `warnings []string` return.
+  Use `ScanRunner`. Will be removed in v1.0.0.
+
+---
+
+## [v0.1.0] — initial release
