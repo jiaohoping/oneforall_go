@@ -122,6 +122,7 @@ scanner, _ = oneforall.NewScanner(ctx,
 ## Asynchronous scan
 
 ```go
+// Simple callback style
 scanner.RunAsync(func(result *oneforall.Result, err error) {
     if err != nil {
         log.Error().Err(err).Msg("scan failed")
@@ -129,6 +130,36 @@ scanner.RunAsync(func(result *oneforall.Result, err error) {
     }
     log.Info().Int("count", len(result.Subdomains)).Msg("async scan done")
 })
+
+// Structured progress events (v0.3.0+)
+ch := scanner.RunAsyncWithProgress()
+for evt := range ch {
+    switch evt.Type {
+    case oneforall.EventStarted:
+        log.Info().Msg("scan started")
+    case oneforall.EventStdoutLine:
+        log.Debug().Str("line", evt.Line).Msg("oneforall output")
+    case oneforall.EventCompleted:
+        if evt.Err != nil {
+            log.Error().Err(evt.Err).Msg("scan failed")
+        } else {
+            log.Info().Int("count", len(evt.Result.Subdomains)).Msg("scan done")
+        }
+    }
+}
+```
+
+## Scanner reuse and cloning
+
+```go
+// Reset clears targets and per-scan state; python/oneforall paths are kept.
+scanner.Reset()
+scanner.AddOptions(oneforall.WithTarget("other.com"))
+result2, _ := scanner.Run()
+
+// Clone creates an independent copy sharing base configuration.
+clone := scanner.Clone()
+clone.AddOptions(oneforall.WithTarget("parallel.com"))
 ```
 
 ## Available options
@@ -148,6 +179,7 @@ scanner.RunAsync(func(result *oneforall.Result, err error) {
 | `WithOutputFormat(fmt)` | `--fmt` | csv |
 | `WithOutputPath(path)` | `--path` | — |
 | `WithCustomArguments(args...)` | any | — |
+| `WithResultDBPath(path)` | *(internal)* | — |
 
 ## Upgrading from v0.1.x
 

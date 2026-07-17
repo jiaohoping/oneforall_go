@@ -163,3 +163,117 @@ func TestResult_Stats_Empty(t *testing.T) {
 		t.Errorf("Stats.ByModule should be empty map")
 	}
 }
+
+// --- v0.3.0 new tests ---
+
+func TestSubdomain_CNAMEs(t *testing.T) {
+	tests := []struct {
+		name  string
+		cname string
+		want  []string
+	}{
+		{"empty", "", nil},
+		{"single", "cdn.example.com", []string{"cdn.example.com"}},
+		{"multiple", "a.cdn.com,b.cdn.com", []string{"a.cdn.com", "b.cdn.com"}},
+		{"spaces", "a.cdn.com, b.cdn.com ", []string{"a.cdn.com", "b.cdn.com"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sub := oneforall.Subdomain{CNAME: tt.cname}
+			got := sub.CNAMEs()
+			if len(got) != len(tt.want) {
+				t.Fatalf("CNAMEs() = %v, want %v", got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("CNAMEs()[%d] = %q, want %q", i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestResult_Unique(t *testing.T) {
+	r := oneforall.Result{
+		Subdomains: []oneforall.Subdomain{
+			{Subdomain: "www.example.com", Module: "dns"},
+			{Subdomain: "mail.example.com", Module: "dns"},
+			{Subdomain: "www.example.com", Module: "brute"}, // duplicate name
+			{Subdomain: "api.example.com", Module: "cert"},
+		},
+	}
+	got := r.Unique()
+	if len(got.Subdomains) != 3 {
+		t.Fatalf("Unique() returned %d subdomains, want 3", len(got.Subdomains))
+	}
+	// First occurrence should be kept (dns module for www.example.com)
+	for _, s := range got.Subdomains {
+		if s.Subdomain == "www.example.com" && s.Module != "dns" {
+			t.Errorf("wrong occurrence kept for www.example.com: module=%s, want dns", s.Module)
+		}
+	}
+}
+
+func TestResult_Unique_Empty(t *testing.T) {
+	r := oneforall.Result{}
+	got := r.Unique()
+	if len(got.Subdomains) != 0 {
+		t.Errorf("Unique() on empty result returned %d subdomains", len(got.Subdomains))
+	}
+}
+
+func TestResult_Unique_NoDuplicates(t *testing.T) {
+	r := oneforall.Result{
+		Subdomains: []oneforall.Subdomain{
+			{Subdomain: "a.com"},
+			{Subdomain: "b.com"},
+			{Subdomain: "c.com"},
+		},
+	}
+	got := r.Unique()
+	if len(got.Subdomains) != 3 {
+		t.Errorf("Unique() with no duplicates returned %d, want 3", len(got.Subdomains))
+	}
+}
+
+func TestResult_GroupBySource(t *testing.T) {
+	r := oneforall.Result{
+		Subdomains: []oneforall.Subdomain{
+			{Subdomain: "a.example.com", Source: "censys"},
+			{Subdomain: "b.example.com", Source: "virustotal"},
+			{Subdomain: "c.example.com", Source: "censys"},
+		},
+	}
+	grouped := r.GroupBySource()
+	if len(grouped["censys"]) != 2 {
+		t.Errorf("censys group has %d entries, want 2", len(grouped["censys"]))
+	}
+	if len(grouped["virustotal"]) != 1 {
+		t.Errorf("virustotal group has %d entries, want 1", len(grouped["virustotal"]))
+	}
+}
+
+func TestResult_Stats_BySource(t *testing.T) {
+	r := oneforall.Result{
+		Subdomains: []oneforall.Subdomain{
+			{Module: "dns", Source: "axfr"},
+			{Module: "dns", Source: "axfr"},
+			{Module: "brute", Source: "wordlist"},
+		},
+	}
+	stats := r.Stats()
+	if stats.BySource["axfr"] != 2 {
+		t.Errorf("BySource[axfr] = %d, want 2", stats.BySource["axfr"])
+	}
+	if stats.BySource["wordlist"] != 1 {
+		t.Errorf("BySource[wordlist] = %d, want 1", stats.BySource["wordlist"])
+	}
+}
+
+func TestResult_Stats_BySource_Empty(t *testing.T) {
+	r := oneforall.Result{}
+	stats := r.Stats()
+	if stats.BySource == nil {
+		t.Error("Stats.BySource should be an initialised map, not nil")
+	}
+}

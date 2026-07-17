@@ -1,5 +1,37 @@
 # Migration Guide
 
+## v0.2.x → v0.3.0
+
+No Breaking Changes. All additions are backward-compatible.
+
+### [Non-breaking] `WithTargetFile` now reads file lazily
+
+Previously `WithTargetFile` called `os.ReadFile` at option-apply time. It now
+defers the read to `Run()`. If the file does not exist when `Run()` is called,
+an error is returned.
+
+### [Non-breaking] `WithTargets` error now propagated
+
+Previously, if `WithTargets` failed to create a temporary file it silently fell
+back to the first domain. The error is now stored internally and returned when
+`Run()` or `Validate()` is called. No API change is required.
+
+### [Non-breaking] New API additions in v0.3.0
+
+| Symbol | Description |
+|---|---|
+| `WithResultDBPath(path)` | Override result SQLite path |
+| `Result.Unique()` | Remove duplicate subdomain names |
+| `Subdomain.CNAMEs() []string` | Parse comma-separated CNAME field |
+| `Result.GroupBySource()` | Group subdomains by data source |
+| `ResultStats.BySource` | Per-source counts in Stats() |
+| `(*Scanner).Reset()` | Clear scan state for reuse |
+| `(*Scanner).Clone()` | Deep-copy scanner with shared base config |
+| `ProgressEventType` / `ProgressEvent` | Structured progress event types |
+| `(*Scanner).RunAsyncWithProgress()` | Channel-based async scan |
+
+---
+
 ## v0.1.x → v0.2.0
 
 This release fixes a number of bugs and cleans up the API.  

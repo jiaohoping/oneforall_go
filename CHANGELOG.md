@@ -94,4 +94,51 @@ See [MIGRATION.md](MIGRATION.md) for a detailed upgrade guide from v0.1.x.
 
 ---
 
+## [v0.3.0] — 2026-07-17
+
+### Fixed
+
+- **Result DB path not honouring custom `--path`** — `processResult` previously
+  always read from `{oneforall.py dir}/results/result.sqlite3` regardless of
+  any custom output directory set via `WithOutputPath` or `ToFile`. The path is
+  now resolved with a three-level fallback: explicit `WithResultDBPath` override
+  → inferred from `outputPath` → default location.
+- **Option errors silently ignored** — `WithTargets` used to fall back to the
+  first domain when temporary file creation failed, with no indication of the
+  failure. Errors are now stored in an internal `initErr` field and returned by
+  `Run()` and `Validate()`.
+- **`WithTargetFile` read file eagerly at option-apply time** — The target file
+  is now read lazily when `Run()` is called, so it does not need to exist when
+  the option is applied.
+
+### Added
+
+- **`WithResultDBPath(path string) Option`** — explicit override for the result
+  SQLite path; useful when using a custom `--path` output directory.
+- **`Result.Unique() Result`** — removes duplicate subdomain names; keeps the
+  first occurrence. Useful after multi-target or multi-module scans.
+- **`Subdomain.CNAMEs() []string`** — parses the comma-separated `CNAME` field
+  into a typed slice, symmetric with the existing `IPs()` method.
+- **`Result.GroupBySource() map[string][]Subdomain`** — groups subdomains by
+  their `Source` field (the data source that found them).
+- **`ResultStats.BySource map[string]int`** — per-source counts in `Stats()`.
+- **`(*Scanner).Reset() *Scanner`** — clears target configuration and per-scan
+  state while retaining python/oneforall paths and process-level options.
+  Enables Scanner reuse for sequential scans without reconstruction.
+- **`(*Scanner).Clone() *Scanner`** — returns a new Scanner with deep-copied
+  slices sharing the same base configuration. Enables parallel scans with
+  per-scan option overrides.
+- **`ProgressEventType` / `ProgressEvent`** — structured event types for
+  real-time scan progress.
+- **`(*Scanner).RunAsyncWithProgress() <-chan ProgressEvent`** — non-blocking
+  scan that streams `EventStarted`, `EventStdoutLine`, and `EventCompleted`
+  events through a buffered channel. The channel is closed when the scan ends.
+  If a `Streamer` is also configured, each stdout line is forwarded to it.
+- **Additional tests** — 25 new test cases covering: `Reset`, `Clone`,
+  `WithTargetFile` deferred read, `initErr` propagation, `WithResultDBPath`,
+  `Unique`, `CNAMEs`, `GroupBySource`, `Stats.BySource`, and the full
+  `RunAsyncWithProgress` event lifecycle (in `async_test.go`).
+
+---
+
 ## [v0.1.0] — initial release

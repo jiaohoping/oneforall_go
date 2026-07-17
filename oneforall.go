@@ -3,6 +3,7 @@
 package oneforall
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"fmt"
@@ -16,6 +17,29 @@ import (
 
 	"github.com/rs/zerolog/log"
 )
+
+// ProgressEventType indicates the kind of event sent on a progress channel.
+type ProgressEventType int
+
+const (
+	// EventStarted is sent once the OneForAll process has been launched.
+	EventStarted ProgressEventType = iota
+	// EventStdoutLine is sent for each line written to OneForAll's stdout.
+	EventStdoutLine
+	// EventCompleted is sent when the scan finishes (successfully or with an error).
+	EventCompleted
+)
+
+// ProgressEvent carries one update from a RunAsyncWithProgress call.
+type ProgressEvent struct {
+	Type ProgressEventType
+	// Line is populated for EventStdoutLine events.
+	Line string
+	// Result is populated for EventCompleted events on success.
+	Result *Result
+	// Err is populated for EventCompleted events on failure.
+	Err error
+}
 
 // ScanRunner is the interface implemented by Scanner.
 type ScanRunner interface {
@@ -31,10 +55,15 @@ type Scanner struct {
 	targetArgs []string
 	// targets holds the domain names used for SQLite table lookup after the scan.
 	targets []string
+	// targetFilePath is set by WithTargetFile; the file is read lazily at Run time.
+	targetFilePath string
 	// runArgs are all --flag [value] pairs placed after "run".
 	runArgs []string
 	// cleanupFiles lists temporary files to be removed after Run completes.
 	cleanupFiles []string
+	// initErr holds the first error that occurred during option application.
+	// Run() and Validate() check this before proceeding.
+	initErr error
 
 	pythonPath    string
 	oneforallPath string
@@ -44,6 +73,7 @@ type Scanner struct {
 
 	streamer     io.Writer
 	outputPath   string // merged from WithOutputPath / ToFile
+	resultDBPath string // explicit override for the result SQLite path
 	outputFormat string // defaults to "csv"
 }
 
@@ -80,11 +110,13 @@ func NewScanner(ctx context.Context, options ...Option) (*Scanner, error) {
 	return scanner, nil
 }
 
-// Validate checks the scanner configuration before running.
-// It verifies that the python executable and oneforall.py script both exist
-// on disk, and that at least one target has been configured.
-// Call this before Run to surface configuration errors early.
+// Validate checks the scanner configuration before running. It verifies that
+// no option-application errors occurred, that the python executable and
+// oneforall.py script both exist on disk, and that at least one target is set.
 func (s *Scanner) Validate() error {
+	if s.initErr != nil {
+		return s.initErr
+	}
 	if s.pythonPath == "" {
 		return ErrPythonNotInstalled
 	}
@@ -138,13 +170,64 @@ func (s *Scanner) Args() []string {
 	return args
 }
 
+// Reset clears all target configuration and per-scan state, retaining the
+// python/oneforall paths and process-level options (SysProcAttr, Streamer).
+// Useful for scanning multiple targets sequentially with the same base config.
+func (s *Scanner) Reset() *Scanner {
+	s.cleanup()
+	s.targetArgs = nil
+	s.targets = nil
+	s.targetFilePath = ""
+	s.runArgs = nil
+	s.initErr = nil
+	s.outputPath = ""
+	s.resultDBPath = ""
+	s.subdomainFilter = nil
+	return s
+}
+
+// Clone returns a new Scanner that shares the same python/oneforall paths and
+// process-level options as s. All slices are deep-copied so the clone can be
+// independently configured via AddOptions without affecting s.
+func (s *Scanner) Clone() *Scanner {
+	c := &Scanner{
+		modifySysProcAttr: s.modifySysProcAttr,
+		pythonPath:        s.pythonPath,
+		oneforallPath:     s.oneforallPath,
+		ctx:               s.ctx,
+		subdomainFilter:   s.subdomainFilter,
+		streamer:          s.streamer,
+		outputPath:        s.outputPath,
+		resultDBPath:      s.resultDBPath,
+		outputFormat:      s.outputFormat,
+		targetFilePath:    s.targetFilePath,
+		initErr:           s.initErr,
+	}
+	if len(s.targetArgs) > 0 {
+		c.targetArgs = append([]string(nil), s.targetArgs...)
+	}
+	if len(s.targets) > 0 {
+		c.targets = append([]string(nil), s.targets...)
+	}
+	if len(s.runArgs) > 0 {
+		c.runArgs = append([]string(nil), s.runArgs...)
+	}
+	return c
+}
+
 // Run executes the OneForAll scan synchronously and returns the parsed result.
 // The context passed to NewScanner can be used to cancel or time out the scan.
 func (s *Scanner) Run() (*Result, error) {
 	defer s.cleanup()
 
+	if s.initErr != nil {
+		return nil, s.initErr
+	}
 	if len(s.targetArgs) == 0 {
 		return nil, fmt.Errorf("missing required parameter: --target or --targets")
+	}
+	if err := s.resolveTargetsFromFile(); err != nil {
+		return nil, err
 	}
 
 	args := s.Args()
@@ -152,8 +235,6 @@ func (s *Scanner) Run() (*Result, error) {
 	log.Info().Str("command", cmdLine).Msg("executing command")
 
 	cmd := exec.CommandContext(s.ctx, s.pythonPath, args...)
-
-	// Ensure SysProcAttr is non-nil before passing to user callback.
 	cmd.SysProcAttr = &syscall.SysProcAttr{}
 	if s.modifySysProcAttr != nil {
 		s.modifySysProcAttr(cmd.SysProcAttr)
@@ -206,6 +287,92 @@ func (s *Scanner) RunAsync(callback func(*Result, error)) {
 	}()
 }
 
+// RunAsyncWithProgress executes the scan in a background goroutine and returns
+// a channel that receives ProgressEvents. The channel is closed once the scan
+// completes or fails. Events are delivered in order:
+//
+//	EventStarted → (zero or more EventStdoutLine) → EventCompleted
+//
+// If a Streamer is also set, each stdout line is forwarded to it in addition
+// to being sent as an EventStdoutLine event.
+func (s *Scanner) RunAsyncWithProgress() <-chan ProgressEvent {
+	ch := make(chan ProgressEvent, 64)
+
+	go func() {
+		defer close(ch)
+		defer s.cleanup()
+
+		if s.initErr != nil {
+			ch <- ProgressEvent{Type: EventCompleted, Err: s.initErr}
+			return
+		}
+		if len(s.targetArgs) == 0 {
+			ch <- ProgressEvent{Type: EventCompleted, Err: fmt.Errorf("missing required parameter: --target or --targets")}
+			return
+		}
+		if err := s.resolveTargetsFromFile(); err != nil {
+			ch <- ProgressEvent{Type: EventCompleted, Err: err}
+			return
+		}
+
+		args := s.Args()
+		cmdLine := fmt.Sprintf("%s %s", s.pythonPath, strings.Join(args, " "))
+		log.Info().Str("command", cmdLine).Msg("executing command (async with progress)")
+
+		cmd := exec.CommandContext(s.ctx, s.pythonPath, args...)
+		cmd.SysProcAttr = &syscall.SysProcAttr{}
+		if s.modifySysProcAttr != nil {
+			s.modifySysProcAttr(cmd.SysProcAttr)
+		}
+
+		stdoutPipe, err := cmd.StdoutPipe()
+		if err != nil {
+			ch <- ProgressEvent{Type: EventCompleted, Err: fmt.Errorf("failed to create stdout pipe: %w", err)}
+			return
+		}
+
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+
+		if err = cmd.Start(); err != nil {
+			ch <- ProgressEvent{Type: EventCompleted, Err: fmt.Errorf("failed to start command: %w", err)}
+			return
+		}
+		ch <- ProgressEvent{Type: EventStarted}
+
+		// Read stdout line by line; forward each line to Streamer if set.
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sc := bufio.NewScanner(stdoutPipe)
+			for sc.Scan() {
+				line := sc.Text()
+				ch <- ProgressEvent{Type: EventStdoutLine, Line: line}
+				if s.streamer != nil {
+					fmt.Fprintln(s.streamer, line) //nolint:errcheck
+				}
+			}
+		}()
+
+		done := make(chan error, 1)
+		go func() {
+			wg.Wait()
+			done <- cmd.Wait()
+		}()
+
+		result := &Result{}
+		if err = s.processResult(result, done, &stderr); err != nil {
+			log.Error().Err(err).Msg("async command execution failed")
+			ch <- ProgressEvent{Type: EventCompleted, Err: err}
+			return
+		}
+		ch <- ProgressEvent{Type: EventCompleted, Result: result}
+	}()
+
+	return ch
+}
+
 func (s *Scanner) processResult(result *Result, done <-chan error, stderr *bytes.Buffer) error {
 	errStatus := <-done
 
@@ -221,20 +388,18 @@ func (s *Scanner) processResult(result *Result, done <-chan error, stderr *bytes
 		return fmt.Errorf("command failed: %w", errStatus)
 	}
 
-	oneforallFolder := filepath.Dir(s.oneforallPath)
-	resultDBPath := filepath.Join(oneforallFolder, RESULT_DB_PATH, RESULT_DB_NAME)
+	dbPath := s.resolveResultDBPath()
 	log.Debug().
 		Strs("targets", s.targets).
-		Str("oneforallFolder", oneforallFolder).
-		Str("resultDBPath", resultDBPath).
+		Str("resultDBPath", dbPath).
 		Msg("processing result")
 
-	if _, err := os.Stat(resultDBPath); os.IsNotExist(err) {
-		log.Error().Str("resultDBPath", resultDBPath).Msg("result database file not found")
+	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
+		log.Error().Str("resultDBPath", dbPath).Msg("result database file not found")
 		return fmt.Errorf("result database file not found: %w", ErrParseOutput)
 	}
 
-	if err := result.FromDBMulti(resultDBPath, s.targets); err != nil {
+	if err := result.FromDBMulti(dbPath, s.targets); err != nil {
 		log.Error().Err(err).Msg("failed to read result database file")
 		return err
 	}
@@ -246,11 +411,58 @@ func (s *Scanner) processResult(result *Result, done <-chan error, stderr *bytes
 	return nil
 }
 
+// resolveResultDBPath returns the path to the OneForAll result SQLite database
+// using a three-level fallback:
+//  1. Explicit override via WithResultDBPath
+//  2. Custom output directory set via WithOutputPath / ToFile
+//  3. Default: {oneforall.py dir}/results/result.sqlite3
+func (s *Scanner) resolveResultDBPath() string {
+	if s.resultDBPath != "" {
+		return s.resultDBPath
+	}
+	if s.outputPath != "" {
+		return filepath.Join(s.outputPath, RESULT_DB_NAME)
+	}
+	return filepath.Join(filepath.Dir(s.oneforallPath), RESULT_DB_PATH, RESULT_DB_NAME)
+}
+
+// resolveTargetsFromFile reads the target file set by WithTargetFile and
+// populates s.targets. It is called lazily at the start of Run / RunAsync.
+func (s *Scanner) resolveTargetsFromFile() error {
+	if s.targetFilePath == "" {
+		return nil
+	}
+	data, err := os.ReadFile(s.targetFilePath)
+	if err != nil {
+		return fmt.Errorf("WithTargetFile: cannot read target file %q: %w", s.targetFilePath, err)
+	}
+	s.targets = nil
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			s.targets = append(s.targets, line)
+		}
+	}
+	if len(s.targets) == 0 {
+		return fmt.Errorf("WithTargetFile: target file %q contains no domains", s.targetFilePath)
+	}
+	return nil
+}
+
 func (s *Scanner) cleanup() {
 	for _, f := range s.cleanupFiles {
 		os.Remove(f) //nolint:errcheck
 	}
 	s.cleanupFiles = nil
+}
+
+// WithResultDBPath explicitly sets the path to the OneForAll SQLite result
+// database, overriding the default path resolution. Use this when you have
+// configured a custom --path output directory so that results are read from
+// the correct location.
+func WithResultDBPath(path string) Option {
+	return func(s *Scanner) {
+		s.resultDBPath = path
+	}
 }
 
 // WithCustomArguments appends raw CLI arguments to the post-"run" argument list.
