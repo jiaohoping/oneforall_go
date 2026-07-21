@@ -277,3 +277,133 @@ func TestResult_Stats_BySource_Empty(t *testing.T) {
 		t.Error("Stats.BySource should be an initialised map, not nil")
 	}
 }
+
+// --- v0.4.0: Diff tests ---
+
+func TestResult_Diff_Added(t *testing.T) {
+	prev := oneforall.Result{
+		Subdomains: []oneforall.Subdomain{
+			{Subdomain: "a.example.com"},
+		},
+	}
+	curr := oneforall.Result{
+		Subdomains: []oneforall.Subdomain{
+			{Subdomain: "a.example.com"},
+			{Subdomain: "b.example.com"}, // new
+		},
+	}
+	diff := curr.Diff(prev)
+	if len(diff.Added) != 1 {
+		t.Fatalf("Added = %d, want 1", len(diff.Added))
+	}
+	if diff.Added[0].Subdomain != "b.example.com" {
+		t.Errorf("Added[0] = %q, want b.example.com", diff.Added[0].Subdomain)
+	}
+	if len(diff.Removed) != 0 {
+		t.Errorf("Removed = %d, want 0", len(diff.Removed))
+	}
+	if len(diff.Changed) != 0 {
+		t.Errorf("Changed = %d, want 0", len(diff.Changed))
+	}
+}
+
+func TestResult_Diff_Removed(t *testing.T) {
+	prev := oneforall.Result{
+		Subdomains: []oneforall.Subdomain{
+			{Subdomain: "a.example.com"},
+			{Subdomain: "b.example.com"},
+		},
+	}
+	curr := oneforall.Result{
+		Subdomains: []oneforall.Subdomain{
+			{Subdomain: "a.example.com"},
+		},
+	}
+	diff := curr.Diff(prev)
+	if len(diff.Removed) != 1 {
+		t.Fatalf("Removed = %d, want 1", len(diff.Removed))
+	}
+	if diff.Removed[0].Subdomain != "b.example.com" {
+		t.Errorf("Removed[0] = %q, want b.example.com", diff.Removed[0].Subdomain)
+	}
+	if len(diff.Added) != 0 {
+		t.Errorf("Added = %d, want 0", len(diff.Added))
+	}
+}
+
+func TestResult_Diff_Changed_IP(t *testing.T) {
+	prev := oneforall.Result{
+		Subdomains: []oneforall.Subdomain{
+			{Subdomain: "a.example.com", IP: "1.2.3.4"},
+		},
+	}
+	curr := oneforall.Result{
+		Subdomains: []oneforall.Subdomain{
+			{Subdomain: "a.example.com", IP: "5.6.7.8"},
+		},
+	}
+	diff := curr.Diff(prev)
+	if len(diff.Changed) != 1 {
+		t.Fatalf("Changed = %d, want 1", len(diff.Changed))
+	}
+	if diff.Changed[0].Before.IP != "1.2.3.4" {
+		t.Errorf("Changed[0].Before.IP = %q, want 1.2.3.4", diff.Changed[0].Before.IP)
+	}
+	if diff.Changed[0].After.IP != "5.6.7.8" {
+		t.Errorf("Changed[0].After.IP = %q, want 5.6.7.8", diff.Changed[0].After.IP)
+	}
+}
+
+func TestResult_Diff_Changed_Alive(t *testing.T) {
+	prev := oneforall.Result{
+		Subdomains: []oneforall.Subdomain{
+			{Subdomain: "a.example.com", Alive: 1},
+		},
+	}
+	curr := oneforall.Result{
+		Subdomains: []oneforall.Subdomain{
+			{Subdomain: "a.example.com", Alive: 0},
+		},
+	}
+	diff := curr.Diff(prev)
+	if len(diff.Changed) != 1 {
+		t.Fatalf("Changed = %d, want 1 (alive changed)", len(diff.Changed))
+	}
+}
+
+func TestResult_Diff_NoChange(t *testing.T) {
+	prev := oneforall.Result{
+		Subdomains: []oneforall.Subdomain{
+			{Subdomain: "a.example.com", IP: "1.2.3.4", Alive: 1, Status: 200},
+		},
+	}
+	curr := oneforall.Result{
+		Subdomains: []oneforall.Subdomain{
+			{Subdomain: "a.example.com", IP: "1.2.3.4", Alive: 1, Status: 200},
+		},
+	}
+	diff := curr.Diff(prev)
+	if len(diff.Added)+len(diff.Removed)+len(diff.Changed) != 0 {
+		t.Errorf("expected empty diff, got added=%d removed=%d changed=%d",
+			len(diff.Added), len(diff.Removed), len(diff.Changed))
+	}
+}
+
+func TestResult_Diff_EmptyInputs(t *testing.T) {
+	diff := oneforall.Result{}.Diff(oneforall.Result{})
+	if len(diff.Added)+len(diff.Removed)+len(diff.Changed) != 0 {
+		t.Error("diff of two empty results should be empty")
+	}
+}
+
+// --- v0.4.0: ScanMeta tests ---
+
+func TestResult_Meta_ZeroValue(t *testing.T) {
+	// Manually constructed Results have zero-value Meta — should not panic.
+	r := oneforall.Result{
+		Subdomains: []oneforall.Subdomain{{Subdomain: "example.com"}},
+	}
+	if !r.Meta.StartedAt.IsZero() {
+		t.Error("manually constructed Result.Meta.StartedAt should be zero")
+	}
+}

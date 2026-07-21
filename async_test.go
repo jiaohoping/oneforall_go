@@ -174,6 +174,73 @@ func TestRunAsyncWithProgress_MissingTarget(t *testing.T) {
 	}
 }
 
+// --- v0.4.0: RunWithProgress tests ---
+
+func TestRunWithProgress_ReceivesEvents(t *testing.T) {
+	s := makeEchoScanner(t, `
+import sys
+print("progress line")
+sys.exit(0)
+`)
+	var types []oneforall.ProgressEventType
+	s.RunWithProgress(func(evt oneforall.ProgressEvent) {
+		types = append(types, evt.Type)
+	})
+
+	if len(types) == 0 {
+		t.Fatal("no events received from RunWithProgress")
+	}
+	// Last event must be EventCompleted.
+	if types[len(types)-1] != oneforall.EventCompleted {
+		t.Errorf("last event type = %v, want EventCompleted", types[len(types)-1])
+	}
+}
+
+func TestRunWithProgress_ReturnsError(t *testing.T) {
+	s := makeEchoScanner(t, `
+import sys
+sys.exit(0)
+`)
+	// DB is missing → EventCompleted.Err set; RunWithProgress must surface it.
+	_, err := s.RunWithProgress(func(_ oneforall.ProgressEvent) {})
+	if err == nil {
+		t.Error("expected error from RunWithProgress when DB missing")
+	}
+}
+
+func TestRunWithProgress_EventOrderMatchesAsync(t *testing.T) {
+	makeScanner := func() *oneforall.Scanner {
+		return makeEchoScanner(t, `
+import sys
+print("line one")
+print("line two")
+sys.exit(0)
+`)
+	}
+
+	// Collect types from RunWithProgress.
+	var syncTypes []oneforall.ProgressEventType
+	makeScanner().RunWithProgress(func(evt oneforall.ProgressEvent) {
+		syncTypes = append(syncTypes, evt.Type)
+	})
+
+	// Collect types from RunAsyncWithProgress.
+	var asyncTypes []oneforall.ProgressEventType
+	for evt := range makeScanner().RunAsyncWithProgress() {
+		asyncTypes = append(asyncTypes, evt.Type)
+	}
+
+	if len(syncTypes) != len(asyncTypes) {
+		t.Errorf("sync event count %d != async event count %d", len(syncTypes), len(asyncTypes))
+		return
+	}
+	for i := range syncTypes {
+		if syncTypes[i] != asyncTypes[i] {
+			t.Errorf("event[%d] sync=%v async=%v", i, syncTypes[i], asyncTypes[i])
+		}
+	}
+}
+
 func TestRunAsyncWithProgress_InitErrSurfaced(t *testing.T) {
 	pyPath := findPython3(t)
 	ofa := filepath.Join(t.TempDir(), "oneforall.py")

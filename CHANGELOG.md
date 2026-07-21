@@ -94,6 +94,70 @@ See [MIGRATION.md](MIGRATION.md) for a detailed upgrade guide from v0.1.x.
 
 ---
 
+## [v1.0.0] — 2026-07-21
+
+### Breaking Changes
+
+- **`WithAlive()` removed** — Deleted from `deprecated.go`. Use `WithValid(true)`.
+- **`ScanRunnerV1` interface removed** — Deleted. Use `ScanRunner`.
+
+### Deprecated (will be removed in v2.0.0)
+
+- **`ToFile(path)`** — Use `WithOutputPath(path)` instead.
+- **`Streamer(w)`** — Use `WithStreamer(w)` instead.
+
+### Added (from v0.4.0 features bundled into v1.0.0)
+
+See v0.4.0 entry below for the full feature list.
+
+---
+
+## [v0.4.0] — 2026-07-21
+
+### Fixed
+
+- None (all defects addressed in prior releases).
+
+### Added
+
+- **CI/CD** — `.github/workflows/ci.yml` runs `go build`, `go vet`, `go test -race`,
+  and `golangci-lint` on every push and pull request.
+- **`.golangci.yml`** — Centralised lint configuration; removes scattered
+  `//nolint:errcheck` comments.
+- **`Result.Diff(previous Result) ResultDiff`** — Computes the difference between
+  two consecutive scan results. Returns `Added`, `Removed`, and `Changed`
+  (`SubdomainChange`) slices. Changed detection covers IP, Status, Alive, CDN.
+- **`SubdomainChange` / `ResultDiff`** — New types supporting `Result.Diff`.
+- **`WithLogger(zerolog.Logger) Option`** — Per-Scanner logger. All internal log
+  messages use the scanner's own logger instead of the global one. Defaults to
+  `log.Logger` at `NewScanner` time. Enables distinguishing logs from concurrent
+  scanners.
+- **`WithEnv(key, value string) Option`** — Adds a `KEY=VALUE` entry to the
+  OneForAll process environment. Additive; can be called multiple times.
+- **`WithWorkDir(dir string) Option`** — Sets the working directory for the
+  OneForAll process.
+- **`WithStreamer(io.Writer) Option`** — Option-style alternative to the chainable
+  `Streamer(w)` method.
+- **`(*Scanner).RunWithProgress(onEvent func(ProgressEvent)) (*Result, error)`** —
+  Synchronous wrapper around `RunAsyncWithProgress`; calls `onEvent` for each
+  event in the caller's goroutine.
+- **`Result.Meta ScanMeta`** — Scan metadata populated by `Run`,
+  `RunWithProgress`, and `RunAsyncWithProgress`: `Targets`, `StartedAt`,
+  `Duration`, `Command`.
+- **`ScanMeta`** — New type with `Targets []string`, `StartedAt time.Time`,
+  `Duration time.Duration`, `Command string`.
+- **Concurrency documentation** — Package-level GoDoc explicitly states that
+  Scanner is not safe for concurrent use and points to `Clone` as the remedy.
+- **15 new tests** across `scanner_test.go`, `models_test.go`, and `async_test.go`.
+  Total: **71 passing tests**.
+
+### Deprecated
+
+- **`ToFile(path)`** (chainable method) — Use `WithOutputPath(path)`.
+- **`Streamer(w)`** (chainable method) — Use `WithStreamer(w)`.
+
+---
+
 ## [v0.3.0] — 2026-07-17
 
 ### Fixed

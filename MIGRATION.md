@@ -1,5 +1,60 @@
 # Migration Guide
 
+## v0.4.x / v1.0.0
+
+### [Breaking] `WithAlive()` removed
+
+The deprecated alias introduced in v0.2.0 has been deleted.
+
+```go
+// old (no longer compiles)
+scanner.AddOptions(oneforall.WithAlive())
+
+// new
+scanner.AddOptions(oneforall.WithValid(true))
+```
+
+### [Breaking] `ScanRunnerV1` interface removed
+
+```go
+// old (no longer compiles)
+var _ oneforall.ScanRunnerV1 = scanner
+
+// new
+var _ oneforall.ScanRunner = scanner
+```
+
+### [Deprecated] `ToFile` and `Streamer` chainable methods
+
+These still work but will be removed in v2.0.0.
+
+```go
+// deprecated
+scanner.ToFile("/path/out").Streamer(os.Stdout)
+
+// preferred
+scanner.AddOptions(
+    oneforall.WithOutputPath("/path/out"),
+    oneforall.WithStreamer(os.Stdout),
+)
+```
+
+### [Non-breaking] New API additions in v0.4.0 / v1.0.0
+
+| Symbol | Description |
+|---|---|
+| `WithLogger(zerolog.Logger)` | Per-Scanner logger |
+| `WithEnv(key, value)` | Set process env var |
+| `WithWorkDir(dir)` | Set process working dir |
+| `WithStreamer(w)` | Option-based streamer |
+| `(*Scanner).RunWithProgress(func(ProgressEvent))` | Sync progress callback |
+| `Result.Meta ScanMeta` | Scan timing/command metadata |
+| `ScanMeta` | New struct |
+| `Result.Diff(previous)` | Incremental diff |
+| `SubdomainChange` / `ResultDiff` | Diff result types |
+
+---
+
 ## v0.2.x → v0.3.0
 
 No Breaking Changes. All additions are backward-compatible.

@@ -1,10 +1,48 @@
 package oneforall
 
-import "strings"
+import (
+	"strings"
+	"time"
+)
+
+// ScanMeta holds metadata recorded about a single scan execution.
+type ScanMeta struct {
+	// Targets is the list of domain names that were scanned.
+	Targets []string `json:"targets"`
+	// StartedAt is the wall-clock time at which Run was called.
+	StartedAt time.Time `json:"started_at"`
+	// Duration is the total elapsed time from Run call to result ready.
+	Duration time.Duration `json:"duration_ns"`
+	// Command is the full python3 command line that was executed.
+	Command string `json:"command"`
+}
 
 // Result holds all subdomains discovered by a scan.
 type Result struct {
 	Subdomains []Subdomain `json:"subdomains"`
+	// Meta contains scan execution metadata populated by Run and RunWithProgress.
+	// It is zero-valued when a Result is constructed manually (e.g. in tests).
+	Meta ScanMeta `json:"meta"`
+}
+
+// SubdomainChange records a subdomain whose key fields changed between two scans.
+type SubdomainChange struct {
+	// Before is the subdomain record from the previous scan.
+	Before Subdomain `json:"before"`
+	// After is the subdomain record from the current scan.
+	After Subdomain `json:"after"`
+}
+
+// ResultDiff holds the difference between two consecutive scan results.
+// Use Result.Diff to compute it.
+type ResultDiff struct {
+	// Added contains subdomains present in the current result but not in previous.
+	Added []Subdomain `json:"added"`
+	// Removed contains subdomains present in previous but absent in the current result.
+	Removed []Subdomain `json:"removed"`
+	// Changed contains subdomains present in both results whose IP, Status,
+	// Alive, or CDN fields differ.
+	Changed []SubdomainChange `json:"changed"`
 }
 
 // Subdomain represents a single subdomain record from the OneForAll SQLite
@@ -89,8 +127,51 @@ func splitCSV(s string) []string {
 
 // --- Result helper methods ---
 
+// Diff compares r (the current result) against previous and returns what
+// changed between the two scans. The matching key is Subdomain.Subdomain
+// (the domain name). Changed entries are those where IP, Status, Alive, or
+// CDN differ.
+func (r Result) Diff(previous Result) ResultDiff {
+	prevMap := make(map[string]Subdomain, len(previous.Subdomains))
+	for _, s := range previous.Subdomains {
+		prevMap[s.Subdomain] = s
+	}
+	currMap := make(map[string]Subdomain, len(r.Subdomains))
+	for _, s := range r.Subdomains {
+		currMap[s.Subdomain] = s
+	}
+
+	var diff ResultDiff
+
+	for name, curr := range currMap {
+		prev, exists := prevMap[name]
+		if !exists {
+			diff.Added = append(diff.Added, curr)
+		} else if subdomainKeyFieldsChanged(prev, curr) {
+			diff.Changed = append(diff.Changed, SubdomainChange{Before: prev, After: curr})
+		}
+	}
+	for name, prev := range prevMap {
+		if _, exists := currMap[name]; !exists {
+			diff.Removed = append(diff.Removed, prev)
+		}
+	}
+
+	return diff
+}
+
+// subdomainKeyFieldsChanged reports whether any of the fields that matter for
+// change detection differ between a and b.
+func subdomainKeyFieldsChanged(a, b Subdomain) bool {
+	return a.IP != b.IP ||
+		a.Status != b.Status ||
+		a.Alive != b.Alive ||
+		a.CDN != b.CDN
+}
+
 // Filter returns a new Result containing only the subdomains for which
-// predicate returns true.
+// predicate returns true. The Meta field is not propagated to the filtered
+// result.
 func (r Result) Filter(predicate func(Subdomain) bool) Result {
 	out := Result{}
 	for _, sub := range r.Subdomains {

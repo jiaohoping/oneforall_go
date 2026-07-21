@@ -1,5 +1,11 @@
 // Package oneforall provides a Go wrapper for calling the OneForAll
 // subdomain collection tool and converting its results into structured objects.
+//
+// # Concurrency
+//
+// A Scanner instance is NOT safe for concurrent use from multiple goroutines.
+// Create one Scanner per goroutine, or use Clone to derive independent copies
+// from a shared base configuration.
 package oneforall
 
 import (
@@ -14,7 +20,9 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
+	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 )
 
@@ -47,6 +55,9 @@ type ScanRunner interface {
 }
 
 // Scanner holds the configuration for a single OneForAll scan.
+//
+// Scanner is NOT safe for concurrent use. See the package documentation for
+// guidance on concurrent scanning patterns.
 type Scanner struct {
 	modifySysProcAttr func(*syscall.SysProcAttr)
 
@@ -69,12 +80,21 @@ type Scanner struct {
 	oneforallPath string
 	ctx           context.Context
 
+	// logger is the zerolog logger used for internal log messages.
+	// Defaults to the global zerolog logger at NewScanner time.
+	logger zerolog.Logger
+
 	subdomainFilter func(Subdomain) bool
 
 	streamer     io.Writer
 	outputPath   string // merged from WithOutputPath / ToFile
 	resultDBPath string // explicit override for the result SQLite path
 	outputFormat string // defaults to "csv"
+
+	// envVars holds extra KEY=VALUE environment entries for the OneForAll process.
+	envVars []string
+	// workDir sets the working directory for the OneForAll process.
+	workDir string
 }
 
 // Option is a functional option applied to a Scanner.
@@ -89,6 +109,7 @@ func NewScanner(ctx context.Context, options ...Option) (*Scanner, error) {
 	scanner := &Scanner{
 		ctx:          ctx,
 		outputFormat: "csv",
+		logger:       log.Logger,
 	}
 
 	for _, option := range options {
@@ -137,12 +158,18 @@ func (s *Scanner) Validate() error {
 
 // ToFile sets the path where OneForAll should write its result file (--path).
 // If WithOutputPath has also been set, the last call wins.
+//
+// Deprecated: use WithOutputPath instead for consistency with the Option
+// pattern. ToFile will be removed in the next major release.
 func (s *Scanner) ToFile(file string) *Scanner {
 	s.outputPath = file
 	return s
 }
 
 // Streamer sets a writer that receives OneForAll's stdout in real time.
+//
+// Deprecated: use WithStreamer instead for consistency with the Option
+// pattern. Streamer will be removed in the next major release.
 func (s *Scanner) Streamer(stream io.Writer) *Scanner {
 	s.streamer = stream
 	return s
@@ -171,8 +198,9 @@ func (s *Scanner) Args() []string {
 }
 
 // Reset clears all target configuration and per-scan state, retaining the
-// python/oneforall paths and process-level options (SysProcAttr, Streamer).
-// Useful for scanning multiple targets sequentially with the same base config.
+// python/oneforall paths, logger, streamer, and process-level options
+// (SysProcAttr, Env, WorkDir). Useful for scanning multiple targets
+// sequentially with the same base configuration.
 func (s *Scanner) Reset() *Scanner {
 	s.cleanup()
 	s.targetArgs = nil
@@ -186,15 +214,16 @@ func (s *Scanner) Reset() *Scanner {
 	return s
 }
 
-// Clone returns a new Scanner that shares the same python/oneforall paths and
-// process-level options as s. All slices are deep-copied so the clone can be
-// independently configured via AddOptions without affecting s.
+// Clone returns a new Scanner that shares the same python/oneforall paths,
+// logger, and process-level options as s. All slices are deep-copied so the
+// clone can be independently configured via AddOptions without affecting s.
 func (s *Scanner) Clone() *Scanner {
 	c := &Scanner{
 		modifySysProcAttr: s.modifySysProcAttr,
 		pythonPath:        s.pythonPath,
 		oneforallPath:     s.oneforallPath,
 		ctx:               s.ctx,
+		logger:            s.logger,
 		subdomainFilter:   s.subdomainFilter,
 		streamer:          s.streamer,
 		outputPath:        s.outputPath,
@@ -202,6 +231,7 @@ func (s *Scanner) Clone() *Scanner {
 		outputFormat:      s.outputFormat,
 		targetFilePath:    s.targetFilePath,
 		initErr:           s.initErr,
+		workDir:           s.workDir,
 	}
 	if len(s.targetArgs) > 0 {
 		c.targetArgs = append([]string(nil), s.targetArgs...)
@@ -212,12 +242,17 @@ func (s *Scanner) Clone() *Scanner {
 	if len(s.runArgs) > 0 {
 		c.runArgs = append([]string(nil), s.runArgs...)
 	}
+	if len(s.envVars) > 0 {
+		c.envVars = append([]string(nil), s.envVars...)
+	}
 	return c
 }
 
 // Run executes the OneForAll scan synchronously and returns the parsed result.
 // The context passed to NewScanner can be used to cancel or time out the scan.
+// result.Meta is populated with scan timing and command metadata.
 func (s *Scanner) Run() (*Result, error) {
+	startedAt := time.Now()
 	defer s.cleanup()
 
 	if s.initErr != nil {
@@ -232,13 +267,10 @@ func (s *Scanner) Run() (*Result, error) {
 
 	args := s.Args()
 	cmdLine := fmt.Sprintf("%s %s", s.pythonPath, strings.Join(args, " "))
-	log.Info().Str("command", cmdLine).Msg("executing command")
+	s.logger.Info().Str("command", cmdLine).Msg("executing command")
 
 	cmd := exec.CommandContext(s.ctx, s.pythonPath, args...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{}
-	if s.modifySysProcAttr != nil {
-		s.modifySysProcAttr(cmd.SysProcAttr)
-	}
+	s.applyProcessConfig(cmd)
 
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
@@ -269,11 +301,18 @@ func (s *Scanner) Run() (*Result, error) {
 		done <- cmd.Wait()
 	}()
 
-	result := &Result{}
+	result := &Result{
+		Meta: ScanMeta{
+			Targets:   append([]string(nil), s.targets...),
+			StartedAt: startedAt,
+			Command:   cmdLine,
+		},
+	}
 	if err = s.processResult(result, done, &stderr); err != nil {
-		log.Error().Err(err).Msg("command execution failed")
+		s.logger.Error().Err(err).Msg("command execution failed")
 		return nil, err
 	}
+	result.Meta.Duration = time.Since(startedAt)
 
 	return result, nil
 }
@@ -287,6 +326,23 @@ func (s *Scanner) RunAsync(callback func(*Result, error)) {
 	}()
 }
 
+// RunWithProgress executes the scan synchronously, calling onEvent for each
+// ProgressEvent as it occurs. It returns the final Result (with Meta populated)
+// when the scan completes.
+//
+// This is a synchronous convenience wrapper around RunAsyncWithProgress.
+func (s *Scanner) RunWithProgress(onEvent func(ProgressEvent)) (*Result, error) {
+	var result *Result
+	var finalErr error
+	for evt := range s.RunAsyncWithProgress() {
+		onEvent(evt)
+		if evt.Type == EventCompleted {
+			result, finalErr = evt.Result, evt.Err
+		}
+	}
+	return result, finalErr
+}
+
 // RunAsyncWithProgress executes the scan in a background goroutine and returns
 // a channel that receives ProgressEvents. The channel is closed once the scan
 // completes or fails. Events are delivered in order:
@@ -295,10 +351,12 @@ func (s *Scanner) RunAsync(callback func(*Result, error)) {
 //
 // If a Streamer is also set, each stdout line is forwarded to it in addition
 // to being sent as an EventStdoutLine event.
+// result.Meta is populated on the EventCompleted event on success.
 func (s *Scanner) RunAsyncWithProgress() <-chan ProgressEvent {
 	ch := make(chan ProgressEvent, 64)
 
 	go func() {
+		startedAt := time.Now()
 		defer close(ch)
 		defer s.cleanup()
 
@@ -317,13 +375,10 @@ func (s *Scanner) RunAsyncWithProgress() <-chan ProgressEvent {
 
 		args := s.Args()
 		cmdLine := fmt.Sprintf("%s %s", s.pythonPath, strings.Join(args, " "))
-		log.Info().Str("command", cmdLine).Msg("executing command (async with progress)")
+		s.logger.Info().Str("command", cmdLine).Msg("executing command (async with progress)")
 
 		cmd := exec.CommandContext(s.ctx, s.pythonPath, args...)
-		cmd.SysProcAttr = &syscall.SysProcAttr{}
-		if s.modifySysProcAttr != nil {
-			s.modifySysProcAttr(cmd.SysProcAttr)
-		}
+		s.applyProcessConfig(cmd)
 
 		stdoutPipe, err := cmd.StdoutPipe()
 		if err != nil {
@@ -361,16 +416,37 @@ func (s *Scanner) RunAsyncWithProgress() <-chan ProgressEvent {
 			done <- cmd.Wait()
 		}()
 
-		result := &Result{}
+		result := &Result{
+			Meta: ScanMeta{
+				Targets:   append([]string(nil), s.targets...),
+				StartedAt: startedAt,
+				Command:   cmdLine,
+			},
+		}
 		if err = s.processResult(result, done, &stderr); err != nil {
-			log.Error().Err(err).Msg("async command execution failed")
+			s.logger.Error().Err(err).Msg("async command execution failed")
 			ch <- ProgressEvent{Type: EventCompleted, Err: err}
 			return
 		}
+		result.Meta.Duration = time.Since(startedAt)
 		ch <- ProgressEvent{Type: EventCompleted, Result: result}
 	}()
 
 	return ch
+}
+
+// applyProcessConfig applies env vars, working directory, and SysProcAttr to cmd.
+func (s *Scanner) applyProcessConfig(cmd *exec.Cmd) {
+	cmd.SysProcAttr = &syscall.SysProcAttr{}
+	if s.modifySysProcAttr != nil {
+		s.modifySysProcAttr(cmd.SysProcAttr)
+	}
+	if len(s.envVars) > 0 {
+		cmd.Env = append(os.Environ(), s.envVars...)
+	}
+	if s.workDir != "" {
+		cmd.Dir = s.workDir
+	}
 }
 
 func (s *Scanner) processResult(result *Result, done <-chan error, stderr *bytes.Buffer) error {
@@ -389,18 +465,18 @@ func (s *Scanner) processResult(result *Result, done <-chan error, stderr *bytes
 	}
 
 	dbPath := s.resolveResultDBPath()
-	log.Debug().
+	s.logger.Debug().
 		Strs("targets", s.targets).
 		Str("resultDBPath", dbPath).
 		Msg("processing result")
 
 	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
-		log.Error().Str("resultDBPath", dbPath).Msg("result database file not found")
+		s.logger.Error().Str("resultDBPath", dbPath).Msg("result database file not found")
 		return fmt.Errorf("result database file not found: %w", ErrParseOutput)
 	}
 
 	if err := result.FromDBMulti(dbPath, s.targets); err != nil {
-		log.Error().Err(err).Msg("failed to read result database file")
+		s.logger.Error().Err(err).Msg("failed to read result database file")
 		return err
 	}
 
@@ -455,6 +531,33 @@ func (s *Scanner) cleanup() {
 	s.cleanupFiles = nil
 }
 
+// WithLogger sets a dedicated zerolog logger for this Scanner instance. All
+// internal log messages will be written to l instead of the global logger.
+// Use this when running multiple concurrent scanners to distinguish their logs.
+func WithLogger(l zerolog.Logger) Option {
+	return func(s *Scanner) {
+		s.logger = l
+	}
+}
+
+// WithEnv adds an environment variable in KEY=VALUE form to the OneForAll
+// process environment. It is additive: calling WithEnv multiple times sets
+// multiple variables. The process inherits the parent environment; these
+// entries are appended on top.
+func WithEnv(key, value string) Option {
+	return func(s *Scanner) {
+		s.envVars = append(s.envVars, key+"="+value)
+	}
+}
+
+// WithWorkDir sets the working directory for the OneForAll process.
+// Defaults to the current working directory when not set.
+func WithWorkDir(dir string) Option {
+	return func(s *Scanner) {
+		s.workDir = dir
+	}
+}
+
 // WithResultDBPath explicitly sets the path to the OneForAll SQLite result
 // database, overriding the default path resolution. Use this when you have
 // configured a custom --path output directory so that results are read from
@@ -462,6 +565,14 @@ func (s *Scanner) cleanup() {
 func WithResultDBPath(path string) Option {
 	return func(s *Scanner) {
 		s.resultDBPath = path
+	}
+}
+
+// WithStreamer sets a writer that receives OneForAll's stdout in real time.
+// Equivalent to the Streamer chainable method but usable as an Option.
+func WithStreamer(w io.Writer) Option {
+	return func(s *Scanner) {
+		s.streamer = w
 	}
 }
 

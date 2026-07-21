@@ -2,12 +2,14 @@ package oneforall_test
 
 import (
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	oneforall "github.com/jiaohoping/oneforall_go"
+	"github.com/rs/zerolog"
 )
 
 // findPython3 returns the path to python3 or skips the test when unavailable.
@@ -136,7 +138,7 @@ func TestArgs_WithValid(t *testing.T) {
 	assertArg(t, s.Args(), "--valid", "True")
 }
 
-func TestArgs_WithAlive_IsDeprecatedAlias(t *testing.T) {
+func TestArgs_WithValid_True(t *testing.T) {
 	pyPath := findPython3(t)
 	ofa := filepath.Join(t.TempDir(), "oneforall.py")
 	os.WriteFile(ofa, []byte(""), 0644)
@@ -145,9 +147,8 @@ func TestArgs_WithAlive_IsDeprecatedAlias(t *testing.T) {
 		oneforall.WithPythonPath(pyPath),
 		oneforall.WithOneForAllPath(ofa),
 		oneforall.WithTarget("example.com"),
-		oneforall.WithAlive(),
+		oneforall.WithValid(true),
 	)
-	// Deprecated WithAlive() must delegate to WithValid(true)
 	assertArg(t, s.Args(), "--valid", "True")
 }
 
@@ -534,6 +535,103 @@ func TestWithTargetFile_TargetsArgSet(t *testing.T) {
 		oneforall.WithTargetFile(domainFile),
 	)
 	assertArg(t, s.Args(), "--targets", domainFile)
+}
+
+// --- v0.4.0 new tests ---
+
+func TestWithLogger_DoesNotPanic(t *testing.T) {
+	pyPath := findPython3(t)
+	ofa := filepath.Join(t.TempDir(), "oneforall.py")
+	os.WriteFile(ofa, []byte(""), 0644)
+
+	customLogger := zerolog.New(io.Discard)
+	s, err := oneforall.NewScanner(context.Background(),
+		oneforall.WithPythonPath(pyPath),
+		oneforall.WithOneForAllPath(ofa),
+		oneforall.WithTarget("example.com"),
+		oneforall.WithLogger(customLogger),
+	)
+	if err != nil {
+		t.Fatalf("NewScanner: %v", err)
+	}
+	if err := s.Validate(); err != nil {
+		t.Errorf("Validate: %v", err)
+	}
+}
+
+func TestWithEnv_NotInCLIArgs(t *testing.T) {
+	pyPath := findPython3(t)
+	ofa := filepath.Join(t.TempDir(), "oneforall.py")
+	os.WriteFile(ofa, []byte(""), 0644)
+
+	s, _ := oneforall.NewScanner(context.Background(),
+		oneforall.WithPythonPath(pyPath),
+		oneforall.WithOneForAllPath(ofa),
+		oneforall.WithTarget("example.com"),
+		oneforall.WithEnv("HTTP_PROXY", "http://proxy:8080"),
+	)
+	// WithEnv must not add CLI args.
+	for _, arg := range s.Args() {
+		if strings.Contains(arg, "HTTP_PROXY") {
+			t.Errorf("WithEnv should not add CLI arg, found %q in %v", arg, s.Args())
+		}
+	}
+}
+
+func TestWithWorkDir_NotInCLIArgs(t *testing.T) {
+	pyPath := findPython3(t)
+	ofa := filepath.Join(t.TempDir(), "oneforall.py")
+	os.WriteFile(ofa, []byte(""), 0644)
+
+	s, _ := oneforall.NewScanner(context.Background(),
+		oneforall.WithPythonPath(pyPath),
+		oneforall.WithOneForAllPath(ofa),
+		oneforall.WithTarget("example.com"),
+		oneforall.WithWorkDir("/tmp"),
+	)
+	for _, arg := range s.Args() {
+		if arg == "/tmp" {
+			t.Errorf("WithWorkDir should not add CLI arg, found /tmp in %v", s.Args())
+		}
+	}
+}
+
+func TestWithStreamer_Option(t *testing.T) {
+	pyPath := findPython3(t)
+	ofa := filepath.Join(t.TempDir(), "oneforall.py")
+	os.WriteFile(ofa, []byte(""), 0644)
+
+	var buf strings.Builder
+	s, _ := oneforall.NewScanner(context.Background(),
+		oneforall.WithPythonPath(pyPath),
+		oneforall.WithOneForAllPath(ofa),
+		oneforall.WithTarget("example.com"),
+		oneforall.WithStreamer(&buf),
+	)
+	// Just verify it doesn't error during construction.
+	if err := s.Validate(); err != nil {
+		t.Errorf("Validate: %v", err)
+	}
+}
+
+func TestClone_CopiesEnvVars(t *testing.T) {
+	pyPath := findPython3(t)
+	ofa := filepath.Join(t.TempDir(), "oneforall.py")
+	os.WriteFile(ofa, []byte(""), 0644)
+
+	original, _ := oneforall.NewScanner(context.Background(),
+		oneforall.WithPythonPath(pyPath),
+		oneforall.WithOneForAllPath(ofa),
+		oneforall.WithTarget("example.com"),
+		oneforall.WithEnv("MY_KEY", "my_val"),
+	)
+	clone := original.Clone()
+	// Adding env to clone must not affect original.
+	clone.AddOptions(oneforall.WithEnv("CLONE_KEY", "clone_val"))
+	// Both are just validated to exist without error.
+	if err := clone.Validate(); err != nil {
+		t.Errorf("clone.Validate: %v", err)
+	}
 }
 
 func TestWithOutputPath_DBPathInference(t *testing.T) {

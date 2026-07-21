@@ -1,0 +1,26 @@
+run:
+  timeout: 5m
+
+linters:
+  enable:
+    - errcheck
+    - staticcheck
+    - unused
+    - govet
+    - gosimple
+    - ineffassign
+    - typecheck
+    - godot
+    - misspell
+    - gofmt
+
+issues:
+  exclude-rules:
+    # io.Copy, os.Remove, fmt.Fprintln return values are intentionally discarded
+    - linters: [errcheck]
+      text: "io\\.Copy|os\\.Remove|fmt\\.Fprintln"
+
+    # Test files may use unkeyed struct literals for brevity
+    - path: "_test\\.go"
+      linters: [govet]
+      text: "composites"
