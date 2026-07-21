@@ -181,13 +181,65 @@ clone.AddOptions(oneforall.WithTarget("parallel.com"))
 | `WithCustomArguments(args...)` | any | — |
 | `WithResultDBPath(path)` | *(internal)* | — |
 
-## Upgrading from v0.1.x
+## Concurrent scanning
+
+```go
+// Scanner is NOT safe for concurrent use. Use Clone for parallel scans.
+base, _ := oneforall.NewScanner(ctx,
+    oneforall.WithOneForAllPath("/path/to/oneforall.py"),
+    oneforall.WithEnv("HTTP_PROXY", "http://proxy:8080"),
+)
+
+// Each goroutine gets its own independent scanner.
+for _, domain := range []string{"a.com", "b.com"} {
+    go func(d string) {
+        s := base.Clone()
+        s.AddOptions(oneforall.WithTarget(d))
+        result, err := s.Run()
+        // ...
+    }(domain)
+}
+```
+
+## Result diffing
+
+```go
+// Compare current scan against a previous one.
+diff := currentResult.Diff(previousResult)
+log.Info().
+    Int("added", len(diff.Added)).
+    Int("removed", len(diff.Removed)).
+    Int("changed", len(diff.Changed)).
+    Msg("scan diff")
+```
+
+## Process environment and working directory
+
+```go
+scanner.AddOptions(
+    oneforall.WithEnv("HTTP_PROXY", "http://proxy:8080"),
+    oneforall.WithEnv("HTTPS_PROXY", "http://proxy:8080"),
+    oneforall.WithWorkDir("/opt/oneforall"),
+)
+```
+
+## Custom per-scanner logger
+
+```go
+// Distinguish logs from concurrent scanners.
+logger := zerolog.New(os.Stderr).With().Str("target", "example.com").Logger()
+scanner.AddOptions(oneforall.WithLogger(logger))
+```
+
+## Upgrading
 
 See [MIGRATION.md](MIGRATION.md) for the full upgrade guide.
 
-**Quick summary of breaking changes:**
+**v1.0.0 breaking changes:**
+- `WithAlive()` removed — use `WithValid(true)`
+- `ScanRunnerV1` interface removed — use `ScanRunner`
 
-- `WithAlive()` → `WithValid(true)` (old symbol is kept as deprecated alias)
+**v0.2.0 breaking changes:**
 - `ScanRunner` interface no longer has a `warnings []string` return value
 - `logger.go` no longer auto-initialises zerolog; configure it in your `main`
 
